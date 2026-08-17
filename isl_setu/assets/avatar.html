@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Avatar Viewport</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #0D131C;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+    }
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #00F0FF;
+      font-size: 14px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      text-align: center;
+      transition: opacity 0.5s ease;
+      pointer-events: none;
+    }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(0, 240, 255, 0.1);
+      border-radius: 50%;
+      border-top-color: #00F0FF;
+      animation: spin 1s ease-in-out infinite;
+      margin: 0 auto 12px auto;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+  <!-- Load Three.js and dependencies from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+  <div id="loading">
+    <div class="spinner"></div>
+    Loading 3D Avatar...
+  </div>
+  <div id="canvas-container"></div>
+
+  <script>
+    let scene, camera, renderer, controls;
+    let avatarModel = null;
+    const bones = {};
+
+    const container = document.getElementById('canvas-container');
+    const loadingEl = document.getElementById('loading');
+
+    // Default bone directions in T-pose space
+    const DIR_LEFT = new THREE.Vector3(-1, 0, 0);
+    const DIR_RIGHT = new THREE.Vector3(1, 0, 0);
+    const DIR_UP = new THREE.Vector3(0, 1, 0);
+
+    init();
+    animate();
+
+    function init() {
+      // 1. Scene setup
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0D131C);
+
+      // 2. Camera setup
+      camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+      // Position camera to frame full avatar (head to feet) on initial load
+      camera.position.set(0, 0.95, 2.6);
+
+      // 3. Renderer setup
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      container.appendChild(renderer.domElement);
+
+      // 4. Controls setup
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.maxPolarAngle = Math.PI / 2; // Don't go below floor
+      controls.minDistance = 0.5;
+      controls.maxDistance = 5;
+      // Look at avatar's vertical center (roughly hip/chest height)
+      controls.target.set(0, 0.9, 0);
+      controls.update();
+
+      // 5. Lighting
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+      scene.add(ambientLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+      dirLight.position.set(2, 4, 3);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 1024;
+      dirLight.shadow.mapSize.height = 1024;
+      dirLight.shadow.bias = -0.001;
+      scene.add(dirLight);
+
+      // Soft blue point fill light for subtle ambient glow
+      const fillLight = new THREE.PointLight(0x00F0FF, 0.5, 5);
+      fillLight.position.set(-2, 1.5, 2);
+      scene.add(fillLight);
+
+      // 6. Grid Helper (Subtle perspective grid)
+      const gridHelper = new THREE.GridHelper(10, 20, 0x00F0FF, 0x1E293B);
+      gridHelper.position.y = 0;
+      gridHelper.material.opacity = 0.15;
+      gridHelper.material.transparent = true;
+      scene.add(gridHelper);
+
+      // 7. Wait for Dart side to send base64 model data.
+      console.log('Waiting for Dart side to stream base64 model data...');
+
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function onModelLoaded(gltf) {
+      avatarModel = gltf.scene;
+      
+      // Scale and position model to center of camera
+      avatarModel.scale.set(1.0, 1.0, 1.0);
+      avatarModel.position.set(0, 0, 0);
+
+      // Enable shadows
+      avatarModel.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+          // Optimize materials for clean, premium appearance
+          if (child.material) {
+            child.material.roughness = 0.6;
+            child.material.metalness = 0.1;
+          }
+        }
+        if (child.isBone) {
+          bones[child.name] = child;
+        }
+      });
+
+      scene.add(avatarModel);
+      
+      // --- Auto-framing Camera logic ---
+      try {
+        avatarModel.updateMatrixWorld(true);
+        
+        const points = [];
+        // Gather bone world positions (most reliable for rigged/skinned characters)
+        avatarModel.traverse((child) => {
+          if (child.isBone) {
+            const worldPos = new THREE.Vector3();
+            child.getWorldPosition(worldPos);
+            points.push(worldPos);
+          }
+        });
+        
+        let box = new THREE.Box3();
+        if (points.length > 0) {
+          points.forEach((pos) => box.expandByPoint(pos));
+        } else {
+          // Fallback to mesh geometry bounding box
+          box.setFromObject(avatarModel);
+        }
+        
+        if (box.isEmpty() || isNaN(box.min.x) || !isFinite(box.min.x)) {
+          throw new Error('Bounding box is empty or invalid');
+        }
+        
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        console.log('Model bounding box size:', size.x, size.y, size.z, 'Center:', center.x, center.y, center.z);
+        
+        // Target is the model's center
+        controls.target.copy(center);
+        
+        // Calculate framing distance based on FOV and size
+        const fovRad = camera.fov * Math.PI / 180;
+        let distance = (size.y / 2) / Math.tan(fovRad / 2);
+        
+        // Safe aspect ratio extraction
+        let aspect = camera.aspect;
+        if (!aspect || isNaN(aspect) || !isFinite(aspect)) {
+          aspect = window.innerWidth / window.innerHeight || 1.0;
+        }
+        aspect = Math.max(aspect, 0.4); // Clamp aspect ratio
+        
+        if (aspect < 1) { // Portrait mode
+          distance = Math.max(distance, (size.x / 2) / (Math.tan(fovRad / 2) * aspect));
+        }
+        // Add 35% margin for comfortable framing
+        distance *= 1.35;
+        
+        // Clamp distance to reasonable boundaries
+        distance = Math.max(0.5, Math.min(distance, 45.0));
+        
+        // Position camera looking slightly downwards at the center
+        camera.position.set(center.x, center.y + size.y * 0.05, center.z + distance);
+        controls.update();
+        console.log('Camera dynamically framed at distance: ' + distance);
+      } catch (cameraErr) {
+        console.error('Error during auto-framing camera:', cameraErr);
+        // Fallback positioning
+        camera.position.set(0, 0.95, 2.6);
+        controls.target.set(0, 0.9, 0);
+        controls.update();
+      }
+
+      // Log bone details to confirm GLB parsed successfully
+      const boneCount = Object.keys(bones).length;
+      let meshCount = 0;
+      avatarModel.traverse((child) => {
+        if (child.isMesh) meshCount++;
+      });
+      console.log('GLB Loaded successfully: ' + meshCount + ' meshes, ' + boneCount + ' bones parsed.');
+
+      // Hide loading spinner
+      loadingEl.style.opacity = '0';
+      setTimeout(() => {
+        loadingEl.style.display = 'none';
+      }, 500);
+
+      // Trigger initial default pose
+      updatePose(null);
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      if (controls) {
+        controls.update();
+      }
+      renderer.render(scene, camera);
+    }
+
+    // Helper to calculate direction vector from MediaPipe landmarks
+    function getMediaPipeVector(start, end) {
+      if (!start || !end) return null;
+      // Invert Y (MediaPipe Y is down, Three.js Y is up)
+      // Invert Z (MediaPipe Z positive is away, Three.js Z positive is forward/viewer)
+      return new THREE.Vector3(
+        end[0] - start[0],
+        -(end[1] - start[1]),
+        -(end[2] - start[2])
+      ).normalize();
+    }
+
+    // Helper to orient a bone to match a target world direction vector
+    function orientBone(bone, worldTargetDir, parentWorldQuat, defaultDir) {
+      if (!bone || !worldTargetDir) return;
+      // Transform target direction vector into parent's local space
+      const localTargetDir = worldTargetDir.clone().applyQuaternion(parentWorldQuat.clone().invert());
+      // Compute quaternion rotation from default direction to local target direction
+      const localQuat = new THREE.Quaternion().setFromUnitVectors(defaultDir, localTargetDir);
+      bone.quaternion.copy(localQuat);
+    }
+
+    // Main entry point called from Dart/WebView JavaScript Channel
+    function updatePose(frameJson) {
+      if (!avatarModel || Object.keys(bones).length === 0) return;
+
+      if (!frameJson) {
+        resetToDefaultPose();
+        return;
+      }
+
+      let frame;
+      try {
+        frame = typeof frameJson === 'string' ? JSON.parse(frameJson) : frameJson;
+      } catch (e) {
+        console.error('Failed to parse frame JSON:', e);
+        return;
+      }
+
+      const pose = frame.pose;
+      const leftHand = frame.left_hand;
+      const rightHand = frame.right_hand;
+
+      // --- Left Arm & Hand Control ---
+      const lArm = bones['mixamorig:LeftArm'];
+      const lForeArm = bones['mixamorig:LeftForeArm'];
+      const lHand = bones['mixamorig:LeftHand'];
+
+      let leftArmQuat = new THREE.Quaternion();
+      let leftForeArmQuat = new THREE.Quaternion();
+
+      if (pose && pose[11] && pose[13] && pose[15]) {
+        // Upper Arm: Shoulder (11) to Elbow (13)
+        const dirUpper = getMediaPipeVector(pose[11], pose[13]);
+        if (lArm && dirUpper) {
+          orientBone(lArm, dirUpper, new THREE.Quaternion(), DIR_LEFT);
+          leftArmQuat.copy(lArm.quaternion);
+        }
+
+        // Forearm: Elbow (13) to Wrist (15)
+        const dirFore = getMediaPipeVector(pose[13], pose[15]);
+        if (lForeArm && dirFore) {
+          orientBone(lForeArm, dirFore, leftArmQuat, DIR_LEFT);
+          leftForeArmQuat.copy(leftArmQuat).multiply(lForeArm.quaternion);
+        }
+      }
+
+      if (leftHand && leftHand.length >= 21) {
+        // Wrist Orientation: Hand base (0) to middle finger knuckle (9)
+        const dirHand = getMediaPipeVector(leftHand[0], leftHand[9]);
+        if (lHand && dirHand) {
+          orientBone(lHand, dirHand, leftForeArmQuat, DIR_LEFT);
+        }
+        
+        // Left Fingers Control
+        animateLeftFingers(leftHand, leftForeArmQuat.clone().multiply(lHand ? lHand.quaternion : new THREE.Quaternion()));
+      }
+
+      // --- Right Arm & Hand Control ---
+      const rArm = bones['mixamorig:RightArm'];
+      const rForeArm = bones['mixamorig:RightForeArm'];
+      const rHand = bones['mixamorig:RightHand'];
+
+      let rightArmQuat = new THREE.Quaternion();
+      let rightForeArmQuat = new THREE.Quaternion();
+
+      if (pose && pose[12] && pose[14] && pose[16]) {
+        // Upper Arm: Shoulder (12) to Elbow (14)
+        const dirUpper = getMediaPipeVector(pose[12], pose[14]);
+        if (rArm && dirUpper) {
+          orientBone(rArm, dirUpper, new THREE.Quaternion(), DIR_RIGHT);
+          rightArmQuat.copy(rArm.quaternion);
+        }
+
+        // Forearm: Elbow (14) to Wrist (16)
+        const dirFore = getMediaPipeVector(pose[14], pose[16]);
+        if (rForeArm && dirFore) {
+          orientBone(rForeArm, dirFore, rightArmQuat, DIR_RIGHT);
+          rightForeArmQuat.copy(rightArmQuat).multiply(rForeArm.quaternion);
+        }
+      }
+
+      if (rightHand && rightHand.length >= 21) {
+        // Wrist Orientation: Hand base (0) to middle finger knuckle (9)
+        const dirHand = getMediaPipeVector(rightHand[0], rightHand[9]);
+        if (rHand && dirHand) {
+          orientBone(rHand, dirHand, rightForeArmQuat, DIR_RIGHT);
+        }
+
+        // Right Fingers Control
+        animateRightFingers(rightHand, rightForeArmQuat.clone().multiply(rHand ? rHand.quaternion : new THREE.Quaternion()));
+      }
+    }
+
+    function animateLeftFingers(hand, handWorldQuat) {
+      const fingerBones = [
+        { name: 'Thumb', landmarks: [1, 2, 3, 4] },
+        { name: 'Index', landmarks: [5, 6, 7, 8] },
+        { name: 'Middle', landmarks: [9, 10, 11, 12] },
+        { name: 'Ring', landmarks: [13, 14, 15, 16] },
+        { name: 'Pinky', landmarks: [17, 18, 19, 20] }
+      ];
+
+      fingerBones.forEach((finger) => {
+        let parentQuat = handWorldQuat.clone();
+        for (let j = 0; j < 3; j++) {
+          const boneName = `mixamorig:LeftHand${finger.name}${j + 1}`;
+          const bone = bones[boneName];
+          if (!bone) continue;
+
+          const pStart = hand[finger.landmarks[j]];
+          const pEnd = hand[finger.landmarks[j + 1]];
+          const dir = getMediaPipeVector(pStart, pEnd);
+
+          if (dir) {
+            orientBone(bone, dir, parentQuat, DIR_LEFT);
+            parentQuat.multiply(bone.quaternion);
+          }
+        }
+      });
+    }
+
+    function animateRightFingers(hand, handWorldQuat) {
+      const fingerBones = [
+        { name: 'Thumb', landmarks: [1, 2, 3, 4] },
+        { name: 'Index', landmarks: [5, 6, 7, 8] },
+        { name: 'Middle', landmarks: [9, 10, 11, 12] },
+        { name: 'Ring', landmarks: [13, 14, 15, 16] },
+        { name: 'Pinky', landmarks: [17, 18, 19, 20] }
+      ];
+
+      fingerBones.forEach((finger) => {
+        let parentQuat = handWorldQuat.clone();
+        for (let j = 0; j < 3; j++) {
+          const boneName = `mixamorig:RightHand${finger.name}${j + 1}`;
+          const bone = bones[boneName];
+          if (!bone) continue;
+
+          const pStart = hand[finger.landmarks[j]];
+          const pEnd = hand[finger.landmarks[j + 1]];
+          const dir = getMediaPipeVector(pStart, pEnd);
+
+          if (dir) {
+            orientBone(bone, dir, parentQuat, DIR_RIGHT);
+            parentQuat.multiply(bone.quaternion);
+          }
+        }
+      });
+    }
+
+    function resetToDefaultPose() {
+      if (!avatarModel) return;
+      avatarModel.traverse((child) => {
+        if (child.isBone) {
+          child.quaternion.set(0, 0, 0, 1);
+        }
+      });
+      // Soft natural rest pose adjustments
+      const lArm = bones['mixamorig:LeftArm'];
+      const rArm = bones['mixamorig:RightArm'];
+      if (lArm) lArm.rotation.z = -Math.PI / 3; // resting arms slightly down
+      if (rArm) rArm.rotation.z = Math.PI / 3;
+    }
+
+    // --- Base64 Model Chunk Streaming & Parsing ---
+    let modelDataChunks = [];
+
+    function appendModelChunk(chunk, currentChunk, totalChunks) {
+      modelDataChunks.push(chunk);
+      if (currentChunk && totalChunks) {
+        const percent = Math.round((currentChunk / totalChunks) * 100);
+        document.getElementById('loading').innerHTML = '<div class="spinner"></div> Loading avatar... ' + percent + '%';
+      }
+    }
+
+    function finalizeModel() {
+      console.log('Finalizing model load. Total chunks received: ' + modelDataChunks.length);
+      document.getElementById('loading').innerHTML = '<div class="spinner"></div> Parsing 3D Model...';
+      // Yield thread to draw the loading text updates before heavy work
+      setTimeout(() => {
+        const fullBase64 = modelDataChunks.join('');
+        modelDataChunks = []; // Free memory
+        loadModelFromBase64(fullBase64);
+      }, 50);
+    }
+
+    function base64ToArrayBuffer(base64) {
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes.buffer;
+    }
+
+    function loadModelFromBase64(base64Data) {
+      console.log('Received base64 model data, length: ' + base64Data.length);
+      try {
+        const arrayBuffer = base64ToArrayBuffer(base64Data);
+        const loader = new THREE.GLTFLoader();
+        loader.parse(
+          arrayBuffer,
+          '',
+          (gltf) => {
+            console.log('Model parsed successfully via base64/ArrayBuffer method');
+            onModelLoaded(gltf);
+          },
+          (error) => {
+            console.error('GLTFLoader.parse failed:', error ? error.message : 'unknown error', error);
+            document.getElementById('loading').innerHTML = '<span style="color: #EF4444;">Failed to parse 3D Model: ' + (error ? error.message : 'unknown') + '</span>';
+          }
+        );
+      } catch (e) {
+        console.error('Exception during base64 decode or parse:', e.message, e);
+        document.getElementById('loading').innerHTML = '<span style="color: #EF4444;">Model decode error: ' + e.message + '</span>';
+      }
+    }
+  </script>
+</body>
+</html>
