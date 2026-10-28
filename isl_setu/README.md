@@ -1,17 +1,30 @@
-# isl_setu
+# ISL Setu — Flutter Companion App
 
-A new Flutter project.
+ISL Setu is the Flutter application within the ISL Gloss repository. Its dependencies and assets indicate an app exploring speech input, navigation/state management, web content integration, and 3D avatar assets.
 
-## Getting Started
+## App components
 
-This project is a starting point for a Flutter application.
+- `lib/main.dart` and `lib/app.dart` — application entry and app configuration.
+- `lib/features/`, `lib/core/`, `lib/shared/` — feature code, shared utilities, and common UI.
+- `assets/Avatar2.glb` — 3D avatar asset.
+- `assets/pose_lookup.json` — pose lookup data.
+- `assets/avatar.html` — web-based avatar resource.
 
-A few resources to get you started if this is your first Flutter project:
+## Run locally
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Requirements: Flutter SDK matching the Dart constraint in `pubspec.yaml`, plus Android Studio/Xcode for your target platform.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter pub get
+flutter run
+```
+
+## Dependencies and integrations
+
+Flutter · Dart · Riverpod · GoRouter · Dio · speech_to_text · WebView · three_dart/flutter_gl
+
+Review runtime permissions, API URLs, model/server availability, and the avatar asset pipeline before treating the app as a complete end-to-end sign-language translation system.
+
+## Parent repository
+
+The sibling `isl_gloss_server/` directory contains the gloss-generation server. See the root README for how the two parts are organized.
